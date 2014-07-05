@@ -11,10 +11,15 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/")
   set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Z7")
 endif()
 
+
+
+
 find_package (CUDA REQUIRED)
+
 find_package (MATLAB REQUIRED)
 
-
+# nvcc flags                                        
+#list(APPEND CUDA_NVCC_FLAGS )
 
 if (MSVC)
 include_directories (
@@ -31,8 +36,7 @@ include_directories (
   include
 )
 endif()
-
-
+set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS};-gencode arch=compute_30,code=sm_30;-Xcompiler \"/wd 4819\"")
 CUDA_ADD_LIBRARY (cu_im2col SHARED
   src/cu_im2col/im2col.cu
   src/cu_im2col/matlab.def

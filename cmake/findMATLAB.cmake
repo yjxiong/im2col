@@ -112,7 +112,7 @@ IF(WIN32)
   # Get path to the include directory
   FIND_PATH(MATLAB_INCLUDE_DIR
     "mex.h"
-    
+    "${MATLAB_ROOT}/extern/include"
     )
 
   FIND_PATH(MATLAB_GPU_INCLUDE_DIR
