@@ -51,11 +51,19 @@ set_target_properties (cu_im2col
   PROPERTIES
   PREFIX ""
   SUFFIX ".mexw64"
+  RUNTIME_OUTPUT_DIRECTORY_DEBUG ../matlab/bin
+  LIBRARY_OUTPUT_DIRECTORY_DEBUG ../matlab/bin
+  RUNTIME_OUTPUT_DIRECTORY_RELEASE ../matlab/bin
+  LIBRARY_OUTPUT_DIRECTORY_RELEASE ../matlab/bin
 )
 set_target_properties (cu_col2im
   PROPERTIES
   PREFIX ""
   SUFFIX ".mexw64"
+  RUNTIME_OUTPUT_DIRECTORY_DEBUG ../matlab/bin
+  LIBRARY_OUTPUT_DIRECTORY_DEBUG ../matlab/bin
+  RUNTIME_OUTPUT_DIRECTORY_RELEASE ../matlab/bin
+  LIBRARY_OUTPUT_DIRECTORY_RELEASE ../matlab/bin
 )
 
 
