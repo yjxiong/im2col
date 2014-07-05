@@ -51,7 +51,7 @@ cudaError_t checkCudaErrors()
 #if defined(DEBUG) || defined(_DEBUG)
   result = cudaDeviceSynchronize(); // async kernel launch errors
   if (result != cudaSuccess)
-    fprintf(stderr, "CUDA Launch Error: %s\n", cudaGetErrorString(result));  
+    mexPrintf("CUDA Launch Error: %s\n", cudaGetErrorString(result));  
 #endif
   return result;
 }

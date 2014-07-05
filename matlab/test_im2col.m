@@ -6,10 +6,7 @@ addpath('./bin');
 % Number of channels of input image
 channel_in = 32;
 
-% Number of channels of output image
-channel_out = 16;
-
-% Size of the sliding windoes/kernel
+% Size of the sliding windows/kernels
 kernel_size = [5 5];
 
 % Stride in x and y direction
@@ -24,12 +21,12 @@ img_size = [50 50];
 img = single(randn([img_size, channel_in]));
 
 
-%% Run the CUDA version im2col
+%% Run the CUDA version col2im
 cols = cu_im2col(img,kernel_size,stride);
 
 
 %% err chk
-% Run a cpu version of im2col to check the result
+% Run a cpu version of col2im to check the result
 cpu_cols = im2colstep(double(gather(img)), [kernel_size,channel_in], [stride,1]);
 
 %% Get the different between 

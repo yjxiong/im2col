@@ -5,43 +5,26 @@
 #include <cuda.h>
 #include <curand.h>
 #include "hemi\hemi.h"
-#include "gpu/mxGPUArray.h"
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, char *file, int line, bool abort=true)
 {
 	if (code != cudaSuccess) 
 	{
-		fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
-		if (abort) exit(code);
+		char err_str[1000];
+		sprintf(err_str,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+		mexErrMsgTxt(err_str);
+		
 	}
-}
-
-#define CURAND_CALL(x) { curandAssert((x), __FILE__, __LINE__); }
-inline void curandAssert(curandStatus_t code, char *file, int line, bool abort=true)
-{
-	if (code != CURAND_STATUS_SUCCESS)
-	{
-		fprintf(stderr,"CURANDError at: %s %d\n", file, line);
-		if (abort) exit(code);
-	}
-
 }
 
 #define HEMI_GRID_STRIDE_LOOP(iter, num) 	for (int iter = hemiGetElementOffset(); \
 	iter<num;\
 	iter+=hemiGetElementStride())
 
-HEMI_KERNEL(my_kernel)(float* a_ptr, float* b_ptr, int n)
-{
-	HEMI_GRID_STRIDE_LOOP(i, n){
-		a_ptr[i]=a_ptr[i]+b_ptr[i];
 
-	}
 
-}
-
-HEMI_KERNEL(d_im2col)(const float* d_image,  int img_c_size, int img_r_size,
+HEMI_KERNEL(d_im2col)(float* d_image,  int img_c_size, int img_r_size,
 					  int thread_num, int total_length, 
 					  int ksize_c, int ksize_r, int channels, 
 					  int stride_c, int stride_r,		  
@@ -82,11 +65,7 @@ HEMI_KERNEL(d_im2col)(const float* d_image,  int img_c_size, int img_r_size,
 	}
 }
 
-#define THREAD_PER_BLOCK 1024
-inline int GET_BLOCK_NUM(const int N) {
-  return (N + THREAD_PER_BLOCK - 1) / THREAD_PER_BLOCK;
-}
-
+#define THREAD_PER_BLOCK 256
 
 #define IMG_OUT plhs[0]
 
@@ -120,11 +99,9 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 	if(nrhs==4)
 		padding = mxGetScalar(PADDING);
 
-	mxInitGPU();
-
-	mxGPUArray const *img_in;
-	mxGPUArray *img_out;
-	img_in = mxGPUCreateFromMxArray(IMG_IN);
+	float *img_in;
+	float *img_out;
+	img_in = (float*)mxGetData(IMG_IN);
 
 
 	double* filter_size;
@@ -138,9 +115,9 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 
 
 
-	size_t img_height =mxGPUGetDimensions(img_in)[0];
-	size_t img_width = mxGPUGetDimensions(img_in)[1];
-	size_t img_channel = mxGPUGetDimensions(img_in)[2];
+	size_t img_height =mxGetDimensions(IMG_IN)[0];
+	size_t img_width = mxGetDimensions(IMG_IN)[1];
+	size_t img_channel = mxGetDimensions(IMG_IN)[2];
 
 	//mexPrintf("height %d width %d channel %d\n", img_height, img_width, img_channel);
 	//mexPrintf("filter height %d filter width %d \n", k_height, k_width);
@@ -151,38 +128,42 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 	int thread_num  = total_size*img_channel;
 
 	//mexPrintf("Total %d columns \n", total_size);
-
-	size_t sizes[2]={col_size,total_size};
 	
-	img_out = mxGPUCreateGPUArray(2, 
-		sizes,
-		mxGPUGetClassID(img_in),
-		mxGPUGetComplexity(img_in),
-		MX_GPU_DO_NOT_INITIALIZE
-		);
+	IMG_OUT = mxCreateNumericMatrix(col_size, total_size, mxSINGLE_CLASS, mxREAL);
+	img_out = (float*)mxGetData(IMG_OUT);
 
 
 	/* Start CUDA PROCESSING*/
-	const float *d_img;
+	float *d_img;
 	float *d_col;
-	d_img = (float const *)(mxGPUGetDataReadOnly(img_in));
-	d_col = (float *)(mxGPUGetData(img_out));
+	size_t n_pixels = img_height*img_width*img_channel;
+	gpuErrchk(cudaMalloc(&d_img, n_pixels*sizeof(float)));
+	gpuErrchk(cudaMalloc(&d_col, col_size*total_size*sizeof(float)));
+
+
+	/* Copy data to GPU mem */
+	//copy data
+	gpuErrchk(cudaMemcpy(d_img, img_in, n_pixels*sizeof(float), cudaMemcpyHostToDevice));
+
+	int numSMs;
+	cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0);
 
 	
-	
-	HEMI_KERNEL_LAUNCH(d_im2col, GET_BLOCK_NUM(thread_num), THREAD_PER_BLOCK, 0, 0, 
+	/* launch kernel */
+	HEMI_KERNEL_LAUNCH(d_im2col, 32*numSMs, THREAD_PER_BLOCK, 0, 0, 
 		d_img, img_height, img_width, 
 		thread_num, total_size,
 		k_height, k_width, img_channel,
 		stride_c,stride_r,
 		padding, padding, 
 		d_col);
+	gpuErrchk(cudaDeviceSynchronize());
+	/*copy result back to cpu mem */
+	gpuErrchk(cudaMemcpy(img_out, d_col, col_size*total_size*sizeof(float), cudaMemcpyDeviceToHost));
 
 
 
-
-	IMG_OUT = mxGPUCreateMxArrayOnGPU(img_out);
-	mxGPUDestroyGPUArray(img_in);
-    mxGPUDestroyGPUArray(img_out);
+	gpuErrchk(cudaFree(d_img));
+	gpuErrchk(cudaFree(d_col));
 	return;
 }

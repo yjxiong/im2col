@@ -32,7 +32,6 @@ else()
 include_directories (
   ${CUDA_INCLUDE_DIRS}
   ${MATLAB_INCLUDE_DIR}
-  ${MATLAB_GPU_INCLUDE_DIR}
   include
 )
 endif()
@@ -71,12 +70,10 @@ set_target_properties (cu_col2im
 TARGET_LINK_LIBRARIES (cu_im2col
   ${MATLAB_LIBRARIES}
   ${CUDA_CUBLAS_LIBRARIES}
-  ${MATLAB_GPU_LIBRARY}
 )
 TARGET_LINK_LIBRARIES (cu_col2im
   ${MATLAB_LIBRARIES}
   ${CUDA_CUBLAS_LIBRARIES}
-  ${MATLAB_GPU_LIBRARY}
 )
 
 
