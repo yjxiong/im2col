@@ -23,46 +23,40 @@ inline void gpuAssert(cudaError_t code, char *file, int line, bool abort=true)
 	iter+=hemiGetElementStride())
 
 
+// CUDA: grid stride looping
+#define CUDA_KERNEL_LOOP(i, n) \
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x; \
+       i < (n); \
+       i += blockDim.x * gridDim.x)
 
-HEMI_KERNEL(d_im2col)(float* d_image,  int img_c_size, int img_r_size,
-					  int thread_num, int total_length, 
-					  int ksize_c, int ksize_r, int channels, 
-					  int stride_c, int stride_r,		  
-					  int padding_c, int padding_r, float* d_output)
-{
-	int out_c_size, out_r_size, out_row, out_col, ch;
-	int col_length = ksize_c*ksize_r*channels;
-	int ksize = ksize_c*ksize_r;
-	int img_channel_size = img_c_size*img_r_size;
-	out_c_size = (img_c_size-ksize_c+2*padding_c)/stride_c+1;
-	out_r_size = (img_r_size-ksize_r+2*padding_r)/stride_r+1;
-	HEMI_GRID_STRIDE_LOOP(idx, thread_num){
+__global__ void im2col_gpu_kernel(const int n, const float* data_im,
+    const int height, const int width, const int ksize, const int pad,
+    const int stride, const int height_col, const int width_col,
+    float* data_col) {
+  CUDA_KERNEL_LOOP(op_idx, n) {
+	int index = op_idx;
+    int w_out = index % width_col;
 
-		//transform the image data to columns
-		
-		int index = idx;
-		out_row = index%out_c_size;
-		index/=out_c_size;
-		out_col = index%out_r_size;
-		ch = index/out_r_size;
-		int col_base = col_length*(idx%total_length)+ksize*ch;
-		int img_base = img_channel_size*ch;
-
-		int ori_c_zero= out_col*stride_c-padding_c;
-		int ori_r_zero= out_row*stride_r-padding_r;
-
-			for (int k_c=0; k_c<ksize_r; k_c++)
-				for (int k_r=0; k_r<ksize_c; k_r++){
-					int ori_c = ori_c_zero+k_c;
-					int ori_r = ori_r_zero+k_r;
-					d_output[col_base+ k_c*ksize_c+k_r]=(ori_c>=0&&ori_c<img_c_size&&ori_r>=0&&ori_r<img_r_size)?
-						d_image[img_base+ori_c*img_c_size+ori_r]
-						//ch*ksize+ k_c*ksize_c+k_r
-					:0;
-					//d_output[idx] = col_base;
-				}
-
-	}
+    index /= width_col;
+    int h_out = index % height_col;
+    int channel_in = index / height_col;
+    int channel_out = channel_in * ksize * ksize;
+    int h_in = h_out * stride - pad;
+    int w_in = w_out * stride - pad;
+	
+    float* temp_col = data_col+ (channel_out * height_col + h_out) * width_col + w_out;
+    const float* temp_img = data_im + (channel_in * height + h_in) * width + w_in;
+	
+    for (int i = 0; i < ksize; ++i) {
+      for (int j = 0; j < ksize; ++j) {
+        int h = h_in + i;
+        int w = w_in + j;
+        *temp_col = (h >= 0 && w >= 0 && h < height && w < width) ?
+            temp_img[i * width + j] : 0;
+        temp_col += height_col * width_col;
+      }
+    }
+  }
 }
 
 #define THREAD_PER_BLOCK 256
@@ -126,11 +120,30 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 	size_t total_size = ((img_height+2*padding-k_height)/stride_c+1)*((img_width+2*padding-k_width)/stride_r+1);
 	size_t col_size = k_height*k_width*img_channel;
 	int thread_num  = total_size*img_channel;
+	size_t height_out = (img_height+2*padding-k_height)/stride_c+1;
+	size_t width_out = (img_width+2*padding-k_width)/stride_r+1;
 
 	//mexPrintf("Total %d columns \n", total_size);
 	
-	IMG_OUT = mxCreateNumericMatrix(col_size, total_size, mxSINGLE_CLASS, mxREAL);
+	IMG_OUT = mxCreateNumericMatrix(total_size, col_size, mxSINGLE_CLASS, mxREAL);
 	img_out = (float*)mxGetData(IMG_OUT);
+
+	/* Call matlab function permute to change to row-major*/
+
+	mxArray* input_array[2], *output_array[1];
+	input_array[0] = mxDuplicateArray(IMG_IN);
+
+	mxArray* DIM_ORDER = mxCreateNumericMatrix(1,3,mxDOUBLE_CLASS, mxREAL);
+	double* ptr = (double*)mxGetData(DIM_ORDER);
+	ptr[0]=2; ptr[1]=1; ptr[2]=3;
+
+	input_array[1] = DIM_ORDER;
+
+	mexCallMATLAB(1, output_array, 2, input_array, "permute");
+
+	mxArray* RM_IMG_IN = output_array[0];
+
+	img_in = (float*)mxGetData(RM_IMG_IN);
 
 
 	/* Start CUDA PROCESSING*/
@@ -148,20 +161,22 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 	int numSMs;
 	cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0);
 
-	
-	/* launch kernel */
-	HEMI_KERNEL_LAUNCH(d_im2col, 32*numSMs, THREAD_PER_BLOCK, 0, 0, 
-		d_img, img_height, img_width, 
-		thread_num, total_size,
-		k_height, k_width, img_channel,
-		stride_c,stride_r,
-		padding, padding, 
+	im2col_gpu_kernel<<<32*numSMs, THREAD_PER_BLOCK>>>(thread_num, d_img,
+		img_height, img_width, k_height, padding, stride_c,
+		height_out, width_out,
 		d_col);
+	gpuErrchk(cudaPeekAtLastError());
 	gpuErrchk(cudaDeviceSynchronize());
 	/*copy result back to cpu mem */
 	gpuErrchk(cudaMemcpy(img_out, d_col, col_size*total_size*sizeof(float), cudaMemcpyDeviceToHost));
 
+	mxSetN(DIM_ORDER, 2);
+	input_array[0] = IMG_OUT;
+	input_array[1] = DIM_ORDER;
+	mexCallMATLAB(1, output_array, 2, input_array, "permute");
 
+	mxDestroyArray(IMG_OUT);
+	IMG_OUT = output_array[0];
 
 	gpuErrchk(cudaFree(d_img));
 	gpuErrchk(cudaFree(d_col));
