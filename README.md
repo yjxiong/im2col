@@ -15,3 +15,4 @@ Transfer image to columns to support all kinds of sliding window operations
 - The test scripts will run the cuda version mex function;
 - They also runs a cpu implementation of im2col/col2im;
 - Error of the function are calculated by comparing these two results. `err=0` means the cuda kernel is running correctly.
+

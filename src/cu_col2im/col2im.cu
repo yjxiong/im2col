@@ -23,40 +23,46 @@ inline void gpuAssert(cudaError_t code, char *file, int line, bool abort=true)
 	iter+=hemiGetElementStride())
 
 
-HEMI_KERNEL(d_col2im)(float* d_col,  int col_c_size, int col_r_size,
-					  int thread_size,
-					  int img_c_size, int img_r_size, int img_channel,
-					  int block_c_size, int block_r_size,
-					  int stride_c, int stride_r, int stride_d,	
-					  int real_c_size, int real_r_size, int real_d_size,
-					  float* d_output_img)
-{
-	HEMI_GRID_STRIDE_LOOP(idx, thread_size){
-		/* For col_r_size columns, we recompile them to an image */
-		int index = idx%col_r_size;
-		int ch = idx/col_r_size;
-		int r_id = index%real_c_size;
-		int c_id_t = index/real_c_size;
-		int c_id = c_id_t%real_r_size;
-		int d_id = c_id_t/real_r_size;
-		int depth_step = img_c_size*img_r_size;
-		int block_depth_step = block_c_size*block_r_size;
+// CUDA: grid stride looping
+#define CUDA_KERNEL_LOOP(i, n) \
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x; \
+       i < (n); \
+       i += blockDim.x * gridDim.x)
 
-		int base = r_id*stride_c+
-			c_id*stride_r*img_c_size+
-			d_id*stride_d*img_c_size*img_r_size+ch*depth_step;
-
-		int col_base = index*col_c_size+ch*block_depth_step;
-
-
-
-		for (int k_c=0; k_c<block_r_size; k_c++)
-			for (int k_r=0; k_r<block_c_size; k_r++){
-				d_output_img[base+k_r+k_c*img_c_size] +=
-					d_col[col_base+k_r+k_c*block_c_size];
-			}
-
-	}
+__global__ void col2im_gpu_kernel(const int n, const float* data_col,
+    const int height, const int width, const int channels, const int ksize,
+    const int pad, const int stride, const int height_col, const int width_col,
+    float* data_im) {
+  CUDA_KERNEL_LOOP(index, n) {
+    float val = 0;
+    int w = index % width + pad;
+    int h = (index / width) % height + pad;
+    int c = index / (width * height);
+    // compute the start and end of the output
+    int w_col_start = (w < ksize) ? 0 : (w - ksize) / stride + 1;
+    int w_col_end = min(w / stride + 1, width_col);
+    int h_col_start = (h < ksize) ? 0 : (h - ksize) / stride + 1;
+    int h_col_end = min(h / stride + 1, height_col);
+    /*
+    for (int h_col = h_col_start; h_col < h_col_end; ++h_col) {
+      for (int w_col = w_col_start; w_col < w_col_end; ++w_col) {
+        // the col location: [c * width * height + h_out, w_out]
+        int c_col = c * ksize * ksize + (h - h_col * stride) * ksize + (w - w_col * stride);
+        val += data_col[(c_col * height_col + h_col) * width_col + w_col];
+      }
+    }
+    */
+    // equivalent implementation
+    int offset = (c * ksize * ksize + h * ksize + w) * height_col * width_col;
+    int coeff_h_col = (1 - stride * ksize * height_col) * width_col;
+    int coeff_w_col = (1 - stride * height_col * width_col);
+    for (int h_col = h_col_start; h_col < h_col_end; ++h_col) {
+      for (int w_col = w_col_start; w_col < w_col_end; ++w_col) {
+        val += data_col[offset + h_col * coeff_h_col + w_col * coeff_w_col];
+      }
+    }
+    data_im[index] = val;
+  }
 }
 
 
@@ -128,6 +134,24 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 
 	size_t thread_size = col_width*img_channel/(block_height*block_width);
 
+
+	/* Call matlab function permute to change to row-major*/
+
+	mxArray* input_array[2], *output_array[1];
+	input_array[0] = mxDuplicateArray(COL_IN);
+
+	mxArray* DIM_ORDER = mxCreateNumericMatrix(1,2,mxDOUBLE_CLASS, mxREAL);
+	double* ptr = (double*)mxGetData(DIM_ORDER);
+	ptr[0]=2; ptr[1]=1;
+
+	input_array[1] = DIM_ORDER;
+
+	mexCallMATLAB(1, output_array, 2, input_array, "permute");
+
+	mxArray* RM_COL_IN = output_array[0];
+
+	col_in = (float*)mxGetData(RM_COL_IN);
+
 	int numSMs;
 	gpuErrchk(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0));
 
@@ -136,17 +160,12 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 	gpuErrchk(cudaMemset(d_img, 0, out_mem_size));
 
 
-	/*	Call Cuda Kernel via Hemi	*/
-	HEMI_KERNEL_LAUNCH(d_col2im, 32*numSMs, THREAD_PER_BLOCK, 0, 0, 
+
+	col2im_gpu_kernel<<<32*numSMs, THREAD_PER_BLOCK>>>(thread_size, 
 		d_col,
-		col_height, col_width, 
-		thread_size,
-		img_height, img_width, img_channel,
-		block_height, block_width,
-		stride_c,stride_r,stride_d,
-		real_c_size, real_r_size, real_d_size,
-		d_img
-		);
+		img_height, img_width, img_channel, block_height,
+	0, stride_c, img_height, img_width,
+    d_img);
 
 	gpuErrchk(cudaDeviceSynchronize());
 

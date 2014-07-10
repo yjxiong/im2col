@@ -12,7 +12,7 @@ summing_size = [1 1];
 stride = [1,1];
 
 % Output image height-width
-img_size = [50 50];
+img_size = [60 70];
 
 %% Build input columns
 
